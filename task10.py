@@ -11,151 +11,132 @@
 """
 
 from tkinter import *
-from shapely.geometry import LineString
+from shapely.geometry import LineString, Point as ShapelyPoint, Polygon as ShapelyPolygon
 from math import *
 import time
 
 
-def rotate(line_from, line_to, point):
+def rotate(a, b, c):
     """
-    Функция определяет, с какой стороны от вектора находится точка
-
-    :param line_from: Первая точка отрезка
-    :param line_to: Вторая точка отрезка
-    :param point: Координаты точки
-    :return: положительное возвращаемое значение соответствует левой стороне, отрицательное — правой, 0 - принадлежит
+    Векторное произведение (AB x AC)
+    >0 - слева, <0 - справа, =0 - на линии
     """
-    return (line_to[0] - line_from[0]) * (point[1] - line_to[1]) - (line_to[1] - line_from[1]) * (point[0] - line_to[0])
+    return (b[0]-a[0])*(c[1]-b[1]) - (b[1]-a[1])*(c[0]-b[0])
 
 
-def intersection(p1, p2, p3, p4):
-    """
-    Пересечение отрезков
-
-    :param p1: Первая точка первого отрезка
-    :param p2: Вторая точка первого отрезка
-    :param p3: Первая точка второго отрезка
-    :param p4: Вторая точка второго отрезка
-    :return: точка пересечения
-    """
-    line1 = LineString([(p1[0], p1[1]), (p2[0], p2[1])])
-    line2 = LineString([(p3[0], p3[1]), (p4[0], p4[1])])
-    if line1.intersection(line2).is_empty:
-        return []
-    else:
-        return [line1.intersection(line2).x, line1.intersection(line2).y]
-
-
-def findside(p1, p2, x, y):
-    """
-    Определение положения точки относительно ребра
-
-    :param p1: первая точка ребра
-    :param p2: вторая точка ребра
-    :param x: координата X
-    :param y: координата X
-    :return:    Если True, то точка СПРАВА от ребра.
-                Если False, то точка СЛЕВА от ребра.
-    """
-    xa = p2[0] - p1[0]
-    ya = p2[1] - p1[1]
-    x -= p1[0]
-    y -= p1[1]
-    if y*xa - x*ya > 0:
-        return True     # right
-    else:
-        return False    # left
+def line_intersection(line1, line2):
+    """Найти точку пересечения двух отрезков"""
+    p1, p2 = line1
+    p3, p4 = line2
+    
+    line1_shapely = LineString([p1, p2])
+    line2_shapely = LineString([p3, p4])
+    
+    if not line1_shapely.intersects(line2_shapely):
+        return None
+        
+    intersection = line1_shapely.intersection(line2_shapely)
+    if intersection.geom_type == 'Point':
+        return [intersection.x, intersection.y]
+    return None
 
 
-def find_leftest_point(cur_polygon):
-    """
-    Поиск точки с самым маленьким X с самым большим Y. То есть находится самая левая и верхняя точка.
+def graham_scan(points):
+    """Алгоритм Грэхема для построения выпуклой оболочки"""
+    if len(points) < 3:
+        return points
+    
+    # Находим самую нижнюю левую точку
+    start = min(points, key=lambda p: (p.y, p.x))
+    
+    # Сортируем точки по полярному углу
+    def polar_angle(p):
+        return atan2(p.y - start.y, p.x - start.x)
+    
+    sorted_points = sorted(points, key=polar_angle)
+    
+    # Строим выпуклую оболочку
+    hull = [start, sorted_points[0]]
+    
+    for i in range(1, len(sorted_points)):
+        while len(hull) > 1 and rotate(hull[-2], hull[-1], sorted_points[i]) <= 0:
+            hull.pop()
+        hull.append(sorted_points[i])
+    
+    return hull
 
-    :param cur_polygon: полигон, заданный списком Point'ов
-    :return: самая левая верхняя точка
-    """
-    leftest_point = Point(x=1000000, y=-1000000, next=None, prev=None)
-    for point in cur_polygon:
-        if point.x < leftest_point.x:
-            leftest_point = point
-        elif point.x == leftest_point.x:
-            if point.y > leftest_point.y:
-                leftest_point = point
-    return leftest_point
 
-
-class Point:
-    """
-    Класс вершины полигона с ссылками на следующую и предыдущую вершины.
-    """
-    def __init__(self, x, y, next=None, prev=None):
+class PolygonPoint:
+    """Точка полигона с информацией о принадлежности"""
+    def __init__(self, x, y, polygon_id, point_id=None):
         self.x = x
         self.y = y
-        self.next = next
-        self.prev = prev
-
-    def print(self):
-        print(self.x, self.y, self.next, self.prev)
+        self.polygon_id = polygon_id  # 1 или 2
+        self.point_id = point_id
+        self.is_intersection = False
+        
+    def __eq__(self, other):
+        if not isinstance(other, PolygonPoint):
+            return False
+        return (abs(self.x - other.x) < 1e-10 and 
+                abs(self.y - other.y) < 1e-10)
+                
+    def __hash__(self):
+        return hash((round(self.x, 6), round(self.y, 6)))
+        
+    def __repr__(self):
+        poly_str = "intersection" if self.is_intersection else f"poly{self.polygon_id}"
+        return f"Point({self.x}, {self.y}, {poly_str})"
 
 
 class Window:
     def __init__(self, size=500, fill=False):
-        # Размер окна
         self.size = size
-        # Флаг заливки объединённых полигонов
         self.fill = fill
         self.window = Tk()
         self.full_figure = False
         self.full_figure2 = False
-        self.point = False
-        self.point2 = False
-        self.point_x = 0
-        self.point_y = 0
-        # список Point'ов
-        self.polygon1 = list()
-        self.polygon2 = list()
-        self.final_points = list()
-        self.window.title("what?")
+        
+        self.polygon1 = []
+        self.polygon2 = []
+        self.final_points = []
+        
+        self.window.title("Объединение выпуклых полигонов")
         self.window.resizable(False, False)
-        # current figure
-        self.points = list()
-        # current figure 2
-        self.points2 = list()
-        # canvas
+        
+        self.points = []
+        self.points2 = []
+        
         self.canvas = Canvas(self.window, width=self.size, height=self.size, background='white')
         self.canvas.grid(row=0, column=0)
-        # mouse clicks
+        
         self.canvas.bind("<ButtonRelease-1>", self.left_button_release)
         self.canvas.bind("<ButtonRelease-2>", self.right_button_release)
 
-        # clear button
         self.clear_button = Button(self.window, text='Clear', command=self.clear_window)
         self.clear_button.grid(row=2, column=3)
 
-        # go button
         self.go_button = Button(self.window, text='Go', command=self.start_algorithm)
         self.go_button.grid(row=1, column=3)
 
         self.window.mainloop()
 
     def clear_window(self):
-        """
-        Отчистка окна.
-        """
         self.canvas.delete("all")
         self.full_figure = False
         self.full_figure2 = False
-        self.points = list()
-        self.points2 = list()
-        self.polygon1 = list()
-        self.polygon2 = list()
-        self.final_points = list()
+        self.points = []
+        self.points2 = []
+        self.polygon1 = []
+        self.polygon2 = []
+        self.final_points = []
 
     def fill_polygon(self):
-        """
-        Заливка объединённых полигонов.
-        """
-        self.canvas.create_polygon(self.final_points, fill="sky blue")
+        if self.final_points:
+            points_flat = []
+            for p in self.final_points:
+                points_flat.extend([p.x, p.y])
+            self.canvas.create_polygon(points_flat, fill="sky blue", outline="green", width=2)
 
     def start_algorithm(self):
         self.union()
@@ -164,209 +145,218 @@ class Window:
 
     def left_button_release(self, event):
         x, y = event.x, event.y
-        point = Point(x, y, None, None)
         if not self.full_figure:
-            if self.points == [] and self.polygon1 == []:
+            if not self.points:
                 self.points.append([x, y])
-                self.polygon1.append(point)
-                self.canvas.create_oval(x, y, x - 1, y - 1)
+                self.polygon1.append(PolygonPoint(x, y, 1, len(self.polygon1)))
+                self.canvas.create_oval(x-2, y-2, x+2, y+2, fill='blue')
             else:
                 x0, y0 = self.points[-1]
-                self.canvas.create_line(x0, y0, x, y, width=2)
+                self.canvas.create_line(x0, y0, x, y, width=2, fill='blue')
                 self.points.append([x, y])
-                point = Point(x, y, None, self.polygon1[-1])
-                self.polygon1[-1].next = point
-                self.polygon1.append(point)
+                self.polygon1.append(PolygonPoint(x, y, 1, len(self.polygon1)))
 
         elif not self.full_figure2:
-            if self.points2 == [] and self.polygon2 == []:
+            if not self.points2:
                 self.points2.append([x, y])
-                self.polygon2.append(point)
-                self.canvas.create_oval(x, y, x - 1, y - 1)
+                self.polygon2.append(PolygonPoint(x, y, 2, len(self.polygon2)))
+                self.canvas.create_oval(x-2, y-2, x+2, y+2, fill='red')
             else:
                 x0, y0 = self.points2[-1]
-                self.canvas.create_line(x0, y0, x, y, width=2)
+                self.canvas.create_line(x0, y0, x, y, width=2, fill='red')
                 self.points2.append([x, y])
-                point = Point(x, y, None, self.polygon2[-1])
-                self.polygon2[-1].next = point
-                self.polygon2.append(point)
+                self.polygon2.append(PolygonPoint(x, y, 2, len(self.polygon2)))
 
     def right_button_release(self, event):
-        if not self.full_figure:
-            print(self.points)
-            if len(self.points) > 2 and len(self.polygon1) > 2:
-                x0, y0 = self.points[-1]
-                x, y = self.points[0]
-                self.polygon1[-1].next = self.polygon1[0]
-                self.polygon1[0].prev = self.polygon1[-1]
-                self.canvas.create_line(x0, y0, x, y, width=2)
-                self.full_figure = True
-                for point in self.polygon1:
-                    point.print()
-                print()
+        if not self.full_figure and len(self.points) > 2:
+            x0, y0 = self.points[-1]
+            x, y = self.points[0]
+            self.canvas.create_line(x0, y0, x, y, width=2, fill='blue')
+            self.full_figure = True
+            print("Полигон 1 завершен")
 
-        elif not self.full_figure2:
-            print(self.points2)
-            if len(self.points2) > 2 and len(self.polygon2) > 2:
-                x0, y0 = self.points2[-1]
-                x, y = self.points2[0]
-                self.polygon2[-1].next = self.polygon2[0]
-                self.polygon2[0].prev = self.polygon2[-1]
-                self.canvas.create_line(x0, y0, x, y, width=2)
-                self.full_figure2 = True
-                for point in self.polygon2:
-                    point.print()
-                print()
+        elif not self.full_figure2 and len(self.points2) > 2:
+            x0, y0 = self.points2[-1]
+            x, y = self.points2[0]
+            self.canvas.create_line(x0, y0, x, y, width=2, fill='red')
+            self.full_figure2 = True
+            print("Полигон 2 завершен")
+
+    def find_all_intersections(self):
+        """Найти все точки пересечения между полигонами"""
+        intersections = []
+        
+        for i in range(len(self.polygon1)):
+            p1 = self.polygon1[i]
+            p2 = self.polygon1[(i + 1) % len(self.polygon1)]
+            
+            for j in range(len(self.polygon2)):
+                p3 = self.polygon2[j]
+                p4 = self.polygon2[(j + 1) % len(self.polygon2)]
+                
+                line1 = ([p1.x, p1.y], [p2.x, p2.y])
+                line2 = ([p3.x, p3.y], [p4.x, p4.y])
+                
+                intersect = line_intersection(line1, line2)
+                if intersect:
+                    intersection_point = PolygonPoint(intersect[0], intersect[1], 0)
+                    intersection_point.is_intersection = True
+                    intersection_point.edge1 = (p1, p2)
+                    intersection_point.edge2 = (p3, p4)
+                    intersections.append(intersection_point)
+                    
+        return intersections
+
+    def point_in_polygon(self, point, polygon):
+        """Проверить, находится ли точка внутри полигона"""
+        x, y = point.x, point.y
+        n = len(polygon)
+        inside = False
+        
+        p1 = polygon[0]
+        for i in range(1, n + 1):
+            p2 = polygon[i % n]
+            if y > min(p1.y, p2.y):
+                if y <= max(p1.y, p2.y):
+                    if x <= max(p1.x, p2.x):
+                        if p1.y != p2.y:
+                            xinters = (y - p1.y) * (p2.x - p1.x) / (p2.y - p1.y) + p1.x
+                        if p1.x == p2.x or x <= xinters:
+                            inside = not inside
+            p1 = p2
+            
+        return inside
+
+    def polygon_contains_polygon(self, poly1, poly2):
+        """Проверить, содержит ли poly1 poly2"""
+        # Если все точки poly2 внутри poly1, то poly1 содержит poly2
+        for point in poly2:
+            if not self.point_in_polygon(point, poly1):
+                return False
+        return True
+
+    def merge_convex_hull(self, points1, points2):
+        """Объединить две выпуклые оболочки"""
+        # Простой подход: объединяем все точки и строим выпуклую оболочку
+        all_points = points1 + points2
+        
+        # Убираем дубликаты
+        unique_points = []
+        seen = set()
+        for p in all_points:
+            key = (round(p.x, 2), round(p.y, 2))
+            if key not in seen:
+                seen.add(key)
+                unique_points.append(p)
+        
+        # Строим выпуклую оболочку
+        if len(unique_points) < 3:
+            return unique_points
+            
+        return graham_scan(unique_points)
 
     def union(self):
-        """
-        Реализация алгоритма "объединение выпуклых полигонов".
-
-        :return: в self.final_polygon записываются координаты всех точек объединённых полигонов
-        """
-
-        left1 = find_leftest_point(self.polygon1)
-        left2 = find_leftest_point(self.polygon2)
-        if left1.x < left2.x:
-            # текущий полигон
-            cur_polygon = self.polygon1
-            # другой полигон
-            other_polygon = self.polygon2
+        """Улучшенный алгоритм объединения выпуклых полигонов"""
+        print("Начало алгоритма объединения")
+        self.final_points = []
+        
+        if not self.polygon1 or not self.polygon2:
+            return
+            
+        # Находим все пересечения
+        intersections = self.find_all_intersections()
+        print(f"Найдено пересечений: {len(intersections)}")
+        
+        # Проверяем особые случаи
+        poly1_contains_poly2 = self.polygon_contains_polygon(self.polygon1, self.polygon2)
+        poly2_contains_poly1 = self.polygon_contains_polygon(self.polygon2, self.polygon1)
+        
+        if poly1_contains_poly2:
+            print("Полигон 1 содержит полигон 2")
+            self.final_points = self.polygon1
+        elif poly2_contains_poly1:
+            print("Полигон 2 содержит полигон 1")
+            self.final_points = self.polygon2
+        elif not intersections:
+            print("Полигоны не пересекаются - строим выпуклую оболочку")
+            # Для непересекающихся строим выпуклую оболочку всех точек
+            self.final_points = self.merge_convex_hull(self.polygon1, self.polygon2)
         else:
-            # текущий полигон
-            cur_polygon = self.polygon2
-            # другой полигон
-            other_polygon = self.polygon1
+            print("Полигоны пересекаются - строим объединение")
+            # Для пересекающихся используем предыдущий алгоритм
+            all_points = []
+            
+            # Добавляем точки пересечения
+            for inter in intersections:
+                all_points.append(inter)
+                
+            # Добавляем вершины полигонов, которые находятся снаружи другого полигона
+            for point in self.polygon1:
+                if not self.point_in_polygon(point, self.polygon2):
+                    all_points.append(point)
+                    
+            for point in self.polygon2:
+                if not self.point_in_polygon(point, self.polygon1):
+                    all_points.append(point)
+            
+            # Сортируем точки по углу относительно центра
+            if all_points:
+                center_x = sum(p.x for p in all_points) / len(all_points)
+                center_y = sum(p.y for p in all_points) / len(all_points)
+                
+                def angle_from_center(point):
+                    return atan2(point.y - center_y, point.x - center_x)
+                    
+                all_points.sort(key=angle_from_center)
+                
+                self.final_points = all_points
+        
+        self.visualize_result()
 
-        # текущая точка
-        cur_point = Point(x=0, y=0, next=None, prev=None)
-        start_point = find_leftest_point(cur_polygon)
-
-        # Список использованных точек
-        used = list()
-        # Чтобы пройти первую итерацию цикла. Ничего лучше не придумал :)
-        start = False
-        # Счётчик найденных точек для нового полигона
-        i = 0
-        # Количество итераций цикла. Необходимо для аварийного выхода в случае зацикливания
-        steps = 0
-        while start_point.x != cur_point.x:
-            # Если зациклились, выходим
-            if steps > len(self.polygon1) + len(self.polygon2) + 1:
-                break
-            steps += 1
-            # обработка первой итерации цикла
-            if not start:
-                # текущая рабочая точка, самая левая и самая верхняя
-                cur_point = find_leftest_point(cur_polygon)
-                # следующая точка после текущей
-                next_point = cur_point.next
-                start = True
-            # ребро от cur_point до next_point
-            line = [[cur_point.x, cur_point.y], [next_point.x, next_point.y]]
-            # добавляем первую точку ребра в финальный список
-            if line[0] not in used:
-                self.final_points.append(line[0])
-                used.append(line[0])
-                print(str(i), ' - точка: ', line[0])
-                i += 1
-                self.canvas.create_oval(line[0][0] + 1, line[0][1] + 1, line[0][0] - 1, line[0][1] - 1,
-                                        outline="red", fill="red", width=3)
-                if len(self.final_points) > 1:
-                    self.canvas.create_line(self.final_points[-2][0], self.final_points[-2][1],
-                                            self.final_points[-1][0], self.final_points[-1][1],
-                                            fill="green", width=2)
-                    time.sleep(1)
+    def visualize_result(self):
+        """Визуализировать результат"""
+        print("Визуализация результата:")
+        
+        # Очищаем старую визуализацию
+        self.canvas.delete("all")
+        
+        # Рисуем исходные полигоны полупрозрачными
+        if self.polygon1:
+            points1 = [[p.x, p.y] for p in self.polygon1]
+            for i in range(len(points1)):
+                p1 = points1[i]
+                p2 = points1[(i + 1) % len(points1)]
+                self.canvas.create_line(p1[0], p1[1], p2[0], p2[1], width=1, fill='lightblue', dash=(2, 2))
+        
+        if self.polygon2:
+            points2 = [[p.x, p.y] for p in self.polygon2]
+            for i in range(len(points2)):
+                p1 = points2[i]
+                p2 = points2[(i + 1) % len(points2)]
+                self.canvas.create_line(p1[0], p1[1], p2[0], p2[1], width=1, fill='lightcoral', dash=(2, 2))
+        
+        # Рисуем объединенный полигон
+        if len(self.final_points) > 1:
+            # Сначала рисуем все точки
+            for i, point in enumerate(self.final_points):
+                color = 'orange' if point.is_intersection else 'green'
+                self.canvas.create_oval(point.x-4, point.y-4, point.x+4, point.y+4, 
+                                      fill=color, outline=color)
+                self.canvas.create_text(point.x, point.y-10, text=str(i), fill='black')
+            
+            # Затем рисуем линии с анимацией
+            for i in range(len(self.final_points)):
+                p1 = self.final_points[i]
+                p2 = self.final_points[(i + 1) % len(self.final_points)]
+                
+                # Рисуем линию
+                self.canvas.create_line(p1.x, p1.y, p2.x, p2.y, width=3, fill='green')
+                
+                print(f"{i} - {p1}")
                 self.canvas.update()
-
-            # текущая точка в другом полигоне
-            other_point = find_leftest_point(other_polygon)
-            # следующая точка в другом полигоне
-            other_next_point = other_point.next
-            j = 0
-            # хранит все пересечиения для данного ребра
-            intersections = list()
-            while j < len(other_polygon):
-                # текущее ребро в другом полигоне
-                other_line = [[other_point.x, other_point.y], [other_next_point.x, other_next_point.y]]
-                # точка пересечения рёбер
-                point_of_intersection = intersection(line[0], line[1], other_line[0], other_line[1])
-                if point_of_intersection:
-                    lst = [other_line, point_of_intersection]
-                    # добавляем в список точек пересечения лист: [[ребро], точка пересечения]
-                    intersections.append(lst)
-
-                # переход к следующей точке
-                other_point = other_next_point
-                other_next_point = other_point.next
-                j += 1
-            # если нет пересечений, переход к следующему ребру в текущем полигоне
-            if not intersections:
-                cur_point = next_point
-                next_point = cur_point.next
-                continue
-
-            # Находим из всех точек пересечения самую ближайшую к первой точке текущего ребра
-            great_intersection = None
-            min_x = 10000000
-            for line_and_point in intersections:
-                modul = abs(line[0][0] - line_and_point[1][0])
-                if modul < min_x:
-                    min_x = modul
-                    great_intersection = line_and_point
-
-            # ндобавляем найденную точку пересечения в финальный список
-            if great_intersection[1] not in used:
-                self.final_points.append(great_intersection[1])
-                used.append(great_intersection[1])
-                print(str(i), ' - точка: ', great_intersection[1])
-                i += 1
-                self.canvas.create_oval(great_intersection[1][0] + 1, great_intersection[1][1] + 1,
-                                        great_intersection[1][0] - 1, great_intersection[1][1] - 1,
-                                        outline="red", fill="red", width=3)
-                self.canvas.create_line(self.final_points[-2][0], self.final_points[-2][1],
-                                        self.final_points[-1][0], self.final_points[-1][1],
-                                        fill="green", width=2)
-                time.sleep(1)
-                self.canvas.update()
-            else:
-                continue
-
-            # находим точку из другого ребра слева от текущего ребра и добавляем эту точку в финальный список
-            for point_in_line in great_intersection[0]:
-                # если False, то точка слева от ребра
-                if not findside(line[0], line[1], point_in_line[0], point_in_line[1]):
-                    if point_in_line not in used:
-                        self.final_points.append(point_in_line)
-                        used.append(point_in_line)
-                        print(str(i), ' - точка: ', point_in_line)
-                        i += 1
-                        self.canvas.create_oval(point_in_line[0] + 1, point_in_line[1] + 1,
-                                                point_in_line[0] - 1, point_in_line[1] - 1,
-                                                outline="red", fill="red", width=3)
-                        self.canvas.create_line(self.final_points[-2][0], self.final_points[-2][1],
-                                                self.final_points[-1][0], self.final_points[-1][1],
-                                                fill="green", width=2)
-                        time.sleep(1)
-                        self.canvas.update()
-                    else:
-                        other_point = other_next_point
-                        other_next_point = other_point.next
-                        j += 1
-                        continue
-                    for point in other_polygon:
-                        if point.x == point_in_line[0] and point.y == point_in_line[1]:
-                            cur_point = point
-                    next_point = cur_point.next
-                    cur_polygon, other_polygon = other_polygon, cur_polygon
-
-        self.canvas.create_line(self.final_points[-1][0], self.final_points[-1][1],
-                                self.final_points[0][0], self.final_points[0][1],
-                                fill="green", width=2)
-        self.canvas.update()
-        print('=====================================================\n'
-              'END\n'
-              '=====================================================\n')
+                time.sleep(0.3)
+        
+        print(f"Всего точек в объединении: {len(self.final_points)}")
 
 
 if __name__ == '__main__':
